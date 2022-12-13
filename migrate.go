@@ -1,18 +1,21 @@
 package migrator
 
 import (
-	"crypto/tls"
+	"context"
 	"errors"
 	"log"
-	"net"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/RocketChat/filestore-migrator/config"
 	"github.com/RocketChat/filestore-migrator/store"
-	mgo "gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
+
+	//mgo "gopkg.in/mgo.v2"
+	//"gopkg.in/mgo.v2/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // Migrate needs to be initialized to begin any migration
@@ -25,7 +28,6 @@ type Migrate struct {
 	connectionString   string
 	fileCollectionName string
 	fileOffset         time.Time
-	session            *mgo.Session
 	uniqueID           string
 	tempFileLocation   string
 	fileDelay          time.Duration
@@ -87,20 +89,6 @@ func New(config *config.Config, skipErrors bool) (*Migrate, error) {
 	if config.Source.Type != "" {
 
 		switch config.Source.Type {
-		case "GridFS":
-			session, err := connectDB(config.Database.ConnectionString)
-			if err != nil {
-				return nil, err
-			}
-
-			sourceStore := &store.GridFSProvider{
-				Database:         config.Database.Database,
-				Session:          session,
-				TempFileLocation: config.TempFileLocation,
-			}
-
-			migrate.sourceStore = sourceStore
-
 		case "GoogleStorage":
 			if (config.Source.GoogleStorage.Bucket == "" || config.Source.GoogleStorage.JSONKey == "") && !config.Source.ReferenceOnly {
 				return nil, errors.New("Make sure you include all of the required options for GoogleStorage")
@@ -219,59 +207,77 @@ func New(config *config.Config, skipErrors bool) (*Migrate, error) {
 
 // GetRocketChatStore uses database to build source Store from settings
 func GetRocketChatStore(dbConfig config.DatabaseConfig) (*config.MigrateTarget, error) {
-	session, err := connectDB(dbConfig.ConnectionString)
+
+	// session, err := connectDB(dbConfig.ConnectionString)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(dbConfig.ConnectionString))
+
 	if err != nil {
 		return nil, err
 	}
 
-	sess := session.Copy()
-	defer sess.Close()
+	defer func() {
+		if err = client.Disconnect(ctx); err != nil {
+			panic(err)
+		}
+	}()
 
-	db := sess.DB(dbConfig.Database)
+	//db := sess.DB(dbConfig.Database)
 
-	settingsCollection := db.C("rocketchat_settings")
+	//settingsCollection := db.C("rocketchat_settings")
+
+	settingsCollection := client.Database(dbConfig.Database).Collection("rocketchat_settings")
 
 	var fileUploadStorageType rocketChatSetting
 
-	if err := settingsCollection.Find(bson.M{"_id": "FileUpload_Storage_Type"}).One(&fileUploadStorageType); err != nil {
-		return nil, err
+	/*
+		if err := settingsCollection.Find(ctx, bson.M{"_id": "FileUpload_Storage_Type"}).One(&fileUploadStorageType); err != nil {
+			return nil, err
+		}
+	*/
+
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err = settingsCollection.FindOne(ctx, bson.M{"_id": "FileUpload_Storage_Type"}).Decode(&fileUploadStorageType)
+	if err == mongo.ErrNoDocuments {
+		log.Println("record does not exist")
+	} else if err != nil {
+		log.Fatal(err)
 	}
 
 	sourceStore := &config.MigrateTarget{}
 
 	switch fileUploadStorageType.Value {
-	case "GridFS":
-		sourceStore.Type = "GridFS"
-		return sourceStore, nil
 	case "AmazonS3":
 		sourceStore.Type = "AmazonS3"
 		var awsAccessID rocketChatSetting
 
-		if err := settingsCollection.Find(bson.M{"_id": "FileUpload_S3_AWSAccessKeyId"}).One(&awsAccessID); err != nil {
+		if err := settingsCollection.FindOne(ctx, bson.M{"_id": "FileUpload_S3_AWSAccessKeyId"}).Decode(&awsAccessID); err != nil {
 			return nil, err
 		}
 
 		var awsSecret rocketChatSetting
 
-		if err := settingsCollection.Find(bson.M{"_id": "FileUpload_S3_AWSSecretAccessKey"}).One(&awsSecret); err != nil {
+		if err := settingsCollection.FindOne(ctx, bson.M{"_id": "FileUpload_S3_AWSSecretAccessKey"}).Decode(&awsSecret); err != nil {
 			return nil, err
 		}
 
 		var bucket rocketChatSetting
 
-		if err := settingsCollection.Find(bson.M{"_id": "FileUpload_S3_Bucket"}).One(&bucket); err != nil {
+		if err := settingsCollection.FindOne(ctx, bson.M{"_id": "FileUpload_S3_Bucket"}).Decode(&bucket); err != nil {
 			return nil, err
 		}
 
 		var region rocketChatSetting
 
-		if err := settingsCollection.Find(bson.M{"_id": "FileUpload_S3_Region"}).One(&region); err != nil {
+		if err := settingsCollection.FindOne(ctx, bson.M{"_id": "FileUpload_S3_Region"}).Decode(&region); err != nil {
 			return nil, err
 		}
 
 		var s3url rocketChatSetting
 
-		if err := settingsCollection.Find(bson.M{"_id": "FileUpload_S3_BucketURL"}).One(&s3url); err != nil {
+		if err := settingsCollection.FindOne(ctx, bson.M{"_id": "FileUpload_S3_BucketURL"}).Decode(&s3url); err != nil {
 			return nil, err
 		}
 
@@ -295,7 +301,7 @@ func GetRocketChatStore(dbConfig config.DatabaseConfig) (*config.MigrateTarget, 
 		sourceStore.Type = "FileSystem"
 		var filesystemLocation rocketChatSetting
 
-		if err := settingsCollection.Find(bson.M{"_id": "FileUpload_FileSystemPath"}).One(&filesystemLocation); err != nil {
+		if err := settingsCollection.FindOne(ctx, bson.M{"_id": "FileUpload_FileSystemPath"}).Decode(&filesystemLocation); err != nil {
 			return nil, err
 		}
 
@@ -309,6 +315,7 @@ func GetRocketChatStore(dbConfig config.DatabaseConfig) (*config.MigrateTarget, 
 	return nil, nil
 }
 
+/*
 func connectDB(connectionstring string) (*mgo.Session, error) {
 
 	ssl := false
@@ -319,13 +326,13 @@ func connectDB(connectionstring string) (*mgo.Session, error) {
 		connectionstring = strings.Replace(connectionstring, "?ssl=true&", "?", -1)
 		ssl = true
 	}
-	
+
 	if strings.Contains(connectionstring, "readPreference=secondaryPreferred") {
 		connectionstring = strings.Replace(connectionstring, "&readPreference=secondaryPreferred", "", -1)
 		connectionstring = strings.Replace(connectionstring, "?readPreference=secondaryPreferred", "", -1)
 		secondaryPreferred = true
 	}
-	
+
 	if strings.Contains(connectionstring, "readPreference=secondary") {
 		connectionstring = strings.Replace(connectionstring, "&readPreference=secondary", "", -1)
 		connectionstring = strings.Replace(connectionstring, "?readPreference=secondary", "", -1)
@@ -356,3 +363,4 @@ func connectDB(connectionstring string) (*mgo.Session, error) {
 
 	return sess.Copy(), nil
 }
+*/

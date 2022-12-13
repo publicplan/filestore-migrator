@@ -1,6 +1,7 @@
 package migrator
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -10,8 +11,12 @@ import (
 
 	"github.com/RocketChat/filestore-migrator/rocketchat"
 	"github.com/RocketChat/filestore-migrator/store"
-	mgo "gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
+
+	// mgo "gopkg.in/mgo.v2"
+	// "gopkg.in/mgo.v2/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type rocketChatSetting struct {
@@ -79,30 +84,34 @@ func (m *Migrate) getFiles() ([]rocketchat.File, error) {
 
 	m.fileCollectionName = fileCollection
 
-	session, err := connectDB(m.connectionString)
-	if err != nil {
-		return nil, err
-	}
+	/*
+		session, err := connectDB(m.connectionString)
+		if err != nil {
+			return nil, err
+		}
+	*/
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(m.connectionString))
 
-	m.session = session
+	defer func() {
+		if err = client.Disconnect(ctx); err != nil {
+			panic(err)
+		}
+	}()
 
-	sess := session.Copy()
-	defer sess.Close()
-
-	db := sess.DB(m.databaseName)
-
-	settingsCollection := db.C("rocketchat_settings")
+	settingsCollection := client.Database(m.databaseName).Collection("rocketchat_settings")
 
 	var uniqueID rocketChatSetting
 
-	if err := settingsCollection.Find(bson.M{"_id": "uniqueID"}).One(&uniqueID); err != nil {
+	if err := settingsCollection.FindOne(ctx, bson.M{"_id": "uniqueID"}).Decode(&uniqueID); err != nil {
 		return nil, err
 	}
 
 	m.debugLog("uniqueId", uniqueID)
 	m.uniqueID = uniqueID.Value
 
-	collection := db.C(fileCollection)
+	collection := client.Database(m.databaseName).Collection(fileCollection)
 
 	var files []rocketchat.File
 
@@ -114,12 +123,23 @@ func (m *Migrate) getFiles() ([]rocketchat.File, error) {
 		query["uploadedAt"] = bson.M{"$gte": m.fileOffset}
 	}
 
-	if err := collection.Find(query).All(&files); err != nil {
-		if err == mgo.ErrNotFound {
-			return nil, errors.New("No files found")
-		}
+	/*
+		if err := collection.Find(query).All(&files); err != nil {
+			if err == mgo.ErrNotFound {
+				return nil, errors.New("No files found")
+			}
 
-		return nil, err
+			return nil, err
+		}
+	*/
+
+	cur, err := collection.Find(ctx, query)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cur.Close(ctx)
+	if err = cur.All(context.TODO(), &files); err != nil {
+		panic(err)
 	}
 
 	return files, nil
@@ -185,16 +205,21 @@ func (m *Migrate) MigrateStore() error {
 			update["$unset"] = bson.M{unset: 1}
 		}
 
-		sess := m.session.Copy()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client, err := mongo.Connect(ctx, options.Client().ApplyURI(m.connectionString))
+		defer func() {
+			if err = client.Disconnect(ctx); err != nil {
+				panic(err)
+			}
+		}()
 
-		db := sess.DB(m.databaseName)
-		collection := db.C(m.fileCollectionName)
+		db := client.Database(m.databaseName)
+		collection := db.Collection(m.fileCollectionName)
 
-		if err := collection.Update(bson.M{"_id": file.ID}, update); err != nil {
+		if _, err := collection.UpdateOne(ctx, bson.M{"_id": file.ID}, update); err != nil {
 			return err
 		}
-
-		sess.Close()
 
 		m.debugLog(fmt.Sprintf("[%v/%v] Completed Uploading %s\n", index, len(files), file.Name))
 
@@ -362,16 +387,20 @@ func (m *Migrate) UploadAll(filesRoot string) error {
 			update["$unset"] = bson.M{unset: 1}
 		}
 
-		sess := m.session.Copy()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		client, err := mongo.Connect(ctx, options.Client().ApplyURI(m.connectionString))
+		defer func() {
+			if err = client.Disconnect(ctx); err != nil {
+				panic(err)
+			}
+		}()
 
-		db := sess.DB(m.databaseName)
-		collection := db.C(m.fileCollectionName)
+		collection := client.Database(m.databaseName).Collection(m.fileCollectionName)
 
-		if err := collection.Update(bson.M{"_id": file.ID}, update); err != nil {
+		if _, err := collection.UpdateOne(ctx, bson.M{"_id": file.ID}, update); err != nil {
 			return err
 		}
-
-		sess.Close()
 
 		m.debugLog(fmt.Sprintf("[%v/%v] Completed Uploading %s\n", index, len(files), file.Name))
 
