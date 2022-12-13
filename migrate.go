@@ -213,10 +213,6 @@ func GetRocketChatStore(dbConfig config.DatabaseConfig) (*config.MigrateTarget, 
 	defer cancel()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(dbConfig.ConnectionString))
 
-	if err != nil {
-		return nil, err
-	}
-
 	defer func() {
 		if err = client.Disconnect(ctx); err != nil {
 			panic(err)
