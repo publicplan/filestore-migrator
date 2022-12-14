@@ -260,8 +260,8 @@ func (m *Migrate) fixFileForUpload(file *rocketchat.File, objectPath string) str
 		}
 
 		// Set to empty object so won't be saved back
-		unset = "GoogleStorage"
-		file.GoogleStorage = rocketchat.GoogleStorage{}
+		// unset = "GoogleStorage"
+		// file.GoogleStorage = rocketchat.GoogleStorage{}
 
 	case "GoogleCloudStorage":
 		file.GoogleStorage = rocketchat.GoogleStorage{
