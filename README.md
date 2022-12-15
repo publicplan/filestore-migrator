@@ -1,4 +1,4 @@
-# filestore-migrator
+# filestore-migrator - THIS FORK WAS HASTILY THROWN TOGETHER TO WORK FOR NEWER MONGODB VERSIONS
 
 **Provided as-is. Make use of backups and use at your own risk**
 
