@@ -1,3 +1,10 @@
 vendor
 files
 config.yaml
+.envrc
+shell.nix
+env-export.sh
+filestore-migrator
+
+temp/
+run.sh
